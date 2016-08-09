@@ -1,7 +1,16 @@
 Name
 ====
 
-form-input-nginx-module - NGINX module that reads HTTP POST and PUT request body encoded in "application/x-www-form-urlencoded" and parses the arguments into nginx variables.
+form-input-nginx-module - NGINX module that reads HTTP POST and PUT request body encoded in "application/x-www-
+form-urlencoded" and parses the arguments into nginx variables.
+
+FORK
+====
+
+This is a fork that adds ability to turn POST payloads into JSON  in nginx:
+
+        set_form_input_json $params;
+
 
 Table of Contents
 =================

@@ -37,6 +37,9 @@ static void ngx_http_form_input_post_read(ngx_http_request_t *r);
 static ngx_int_t ngx_http_form_input_arg(ngx_http_request_t *r, u_char *name,
     size_t len, ngx_str_t *value, ngx_flag_t multi);
 
+static ngx_int_t ngx_http_form_input_json(ngx_http_request_t *r, u_char *name,
+    size_t len, ngx_str_t *value, ngx_flag_t multi);
+
 
 static ngx_command_t ngx_http_form_input_commands[] = {
 
@@ -48,6 +51,13 @@ static ngx_command_t ngx_http_form_input_commands[] = {
       NULL },
 
     { ngx_string("set_form_input_multi"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE12,
+      ngx_http_set_form_input_conf_handler,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("set_form_input_json"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE12,
       ngx_http_set_form_input_conf_handler,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -303,6 +313,421 @@ ngx_http_form_input_arg(ngx_http_request_t *r, u_char *arg_name, size_t arg_len,
 }
 
 
+
+
+
+
+// parse request body into json 
+
+static ngx_int_t
+ngx_http_set_form_input_json(ngx_http_request_t *r, ngx_str_t *res,
+    ngx_http_variable_value_t *v)
+{
+    ngx_http_form_input_ctx_t           *ctx;
+    ngx_int_t                            rc;
+
+    dd_enter();
+
+    dd("set default return value");
+    ngx_str_set(res, "");
+
+    /* dd("set default return value"); */
+
+    if (r->done) {
+        return NGX_OK;
+    }
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_form_input_module);
+
+    if (ctx == NULL) {
+        dd("ndk handler:null ctx");
+        return NGX_OK;
+    }
+
+    if (!ctx->done) {
+        dd("ctx not done");
+        return NGX_OK;
+    }
+
+    rc = ngx_http_form_input_json(r, v->data, v->len, res, 0);
+
+    return rc;
+}
+
+int
+ngx_http_set_misc_escape_json_str_forked(char *dst, char *src, size_t size)
+{
+    ngx_uint_t                   n;
+
+    static char hex[] = "0123456789abcdef";
+
+    if (dst == NULL) {
+        /* find the number of characters to be escaped */
+
+        n = 0;
+
+        while (size) {
+            /* UTF-8 char has high bit of 1 */
+            if ((*src & 0x80) == 0) {
+                switch (*src) {
+                case '\r':
+                case '\n':
+                case '\\':
+                case '"':
+                case '\f':
+                case '\b':
+                case '\t':
+                    n++;
+                    break;
+                default:
+                    if (*src < 32) {
+                        n += sizeof("\\u00xx") - 2;
+                    }
+
+                    break;
+                }
+            }
+
+            src++;
+            size--;
+        }
+
+        return (uintptr_t) n;
+    }
+
+    while (size) {
+        if ((*src & 0x80) == 0) {
+            switch (*src) {
+            case '\r':
+                *dst++ = '\\';
+                *dst++ = 'r';
+                break;
+
+            case '\n':
+                *dst++ = '\\';
+                *dst++ = 'n';
+                break;
+
+            case '\\':
+                *dst++ = '\\';
+                *dst++ = '\\';
+                break;
+
+            case '"':
+                *dst++ = '\\';
+                *dst++ = '"';
+                break;
+
+            case '\f':
+                *dst++ = '\\';
+                *dst++ = 'f';
+                break;
+
+            case '\b':
+                *dst++ = '\\';
+                *dst++ = 'b';
+                break;
+
+            case '\t':
+                *dst++ = '\\';
+                *dst++ = 't';
+                break;
+
+            default:
+                if (*src < 32) { /* control chars */
+                    *dst++ = '\\';
+                    *dst++ = 'u';
+                    *dst++ = '0';
+                    *dst++ = '0';
+                    *dst++ = hex[*src >> 4];
+                    *dst++ = hex[*src & 0x0f];
+                } else {
+                    *dst++ = *src;
+                }
+                break;
+            } /* switch */
+
+            src++;
+
+        } else {
+            *dst++ = *src++;
+        }
+
+        size--;
+    }
+
+    return (uintptr_t) dst;
+}
+
+// push value into sorted array at correct spot 
+// sorting is needed to serialize nested qs keys properly
+int array_push_sorted(char *array[128], int size, char *string, int length) {
+  int j, k;
+  char *old;
+  for (j = 0; j < size; j++ ) {
+    old = array[j];
+    int i = 0;
+    // skip equal parts of keys
+    for (; i < length; i++)
+      if (string[i] != old[i])
+        break;
+    // compare strings, splice item into array
+    if (string[i] < old[i]) {
+      for (k = size; --k >= j;)
+        array[k + 1] = array[k];
+      break;
+    }
+  }
+  array[j] = string;
+
+  // return new length
+  return size + 1;
+}
+
+// fills given string with nested json produced by parsing of qs
+char *query_string_to_json(char *response, char *qs, int size) {
+  int length = 0;
+  char *array[128];
+
+  char *last = qs;
+  for (char *p = qs; p < qs + size; p++) {
+    if (*p == '&' || p == qs + size - 1) {
+      length = array_push_sorted(array, length, last, p - last - 1);
+      last = p + 1;
+    }
+
+  }
+
+  strcat(response, "{");
+
+  int lastch = 0;
+  char *finish, *start, *position, *previous;
+
+  previous = NULL;
+
+  for (int i = 0; i < length; i++) {
+    start = *(array + i);
+    position = start;
+
+    int separated = 0;
+    int closed = 0;
+    for (char *p = *(array + i); p < qs + size; p++) {
+      char *next = p;
+      lastch = (p == qs + size - 1 || *next == '&' || *next == '=') ? 1 : 0;
+      
+      // found boundaries of a keyword (EOL, [ or ])
+      if (*next == '[' || lastch) {
+        finish = p;
+        int prepended = 0;
+
+        if (previous != NULL) {
+          // Dont prepend context that matches with previous key
+          int len = last - previous;
+          if (strncmp(previous, start, len > position - start ? len : position - start) == 0)
+            if (!lastch && len >= finish - start)
+              prepended = 1; 
+
+          // close all mismatching objects
+          if (len > finish - start && prepended == 0 && closed == 0) {
+            closed = 1;
+            for (char *m = previous + 1; m < last; m++)
+              if (*m == '[')
+                strcat(response, "}\n");
+          }
+
+          // add comma
+          if (!separated) {
+            separated = 1;
+            strcat(response, ",");
+          }
+        }
+
+        // prepend key
+        if (!prepended) {
+          char *fin = *(finish - 1) == ']' ? finish - 1 : finish;
+          char *pos = *position == '[' ? position + 1 : position;
+
+          strcat(response, "\"");
+          strncpy(response + strlen(response), pos, fin - pos);
+        }
+
+        if (lastch) {
+          strcat(response, "\":\"");
+
+          // find value
+          char *v = finish + 1;
+          for (; v < qs + size; v++) {
+            if (*v == '&' || *v == '=')
+              break;
+          }
+
+          
+          // need to escape quotes?
+          int escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish + 1, v - finish - 1);
+          //fprintf(stdout, "got to escape %d\n", escape);
+
+          int from = strlen(response);
+          if (escape > 0) {
+            ngx_http_set_misc_escape_json_str_forked(response + from, finish + 1, v - finish - 1);
+
+          // append value
+          } else {
+            strncpy(response + from, finish + 1, v - finish - 1);
+          }
+
+          strcat(response, "\"\n");
+
+          // remember path
+          previous = start;
+          last = position;
+
+        } else {
+          // prepend key
+          if (!prepended) strcat(response, "\": {\n");
+          position = finish + 1;
+        }
+      }
+      if (lastch) break;
+
+
+    }
+  }
+  // close all open objects
+  for (char *m = previous + 1; m < last; m++)
+    if (*m == '[')
+      strcat(response, "}\n");
+
+  strcat(response, "}\0");
+
+
+  return response;
+}
+
+
+/* serialize response as json
+  (as k/v objects wrapped in outer array)*/
+static ngx_int_t
+ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len,
+    ngx_str_t *value, ngx_flag_t multi)
+{
+    u_char              *p, *last, *buf;
+    ngx_chain_t         *cl;
+    size_t               len = 0;
+    ngx_array_t         *array = NULL;
+    ngx_buf_t           *b;
+
+    if (multi) {
+        array = ngx_array_create(r->pool, 1, sizeof(ngx_str_t));
+        if (array == NULL) {
+            return NGX_ERROR;
+        }
+        value->data = (u_char *)array;
+        value->len = sizeof(ngx_array_t);
+
+    } else {
+        ngx_str_set(value, "");
+    }
+
+    /* we read data from r->request_body->bufs */
+    if (r->request_body == NULL || r->request_body->bufs == NULL) {
+        dd("empty rb or empty rb bufs");
+        return NGX_OK;
+    }
+
+    if (r->request_body->bufs->next != NULL) {
+        /* more than one buffer...we should copy the data out... */
+        len = 0;
+        for (cl = r->request_body->bufs; cl; cl = cl->next) {
+            b = cl->buf;
+
+            if (b->in_file) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "form-input: in-file buffer found. aborted. "
+                              "consider increasing your "
+                              "client_body_buffer_size setting");
+
+                return NGX_OK;
+            }
+
+            len += b->last - b->pos;
+        }
+
+        dd("len=%d", (int) len);
+
+        if (len == 0) {
+            return NGX_OK;
+        }
+
+        buf = ngx_palloc(r->pool, len);
+        if (buf == NULL) {
+            return NGX_ERROR;
+        }
+
+        p = buf;
+        last = p + len;
+
+        for (cl = r->request_body->bufs; cl; cl = cl->next) {
+            p = ngx_copy(p, cl->buf->pos, cl->buf->last - cl->buf->pos);
+        }
+
+        dd("p - buf = %d, last - buf = %d", (int) (p - buf),
+           (int) (last - buf));
+
+        dd("copied buf (len %d): %.*s", (int) len, (int) len,
+           buf);
+
+    } else {
+        dd("XXX one buffer only");
+
+        b = r->request_body->bufs->buf;
+        if (ngx_buf_size(b) == 0) {
+            return NGX_OK;
+        }
+
+        buf = b->pos;
+        last = b->last;
+    }
+
+    //fprintf(stdout, "finding %s\n ", buf);
+
+    // replace plus sign with space (?)
+
+    char decoded[1024] = "";
+    char *response = ngx_pnalloc(r->pool, sizeof(char) * 1024);
+    ngx_memzero(response, sizeof(char) * 1024);
+
+    //fprintf(stdout, "escaping %s\n ", buf);
+
+    u_char *dst = (u_char *) &decoded;
+    u_char *src = buf;
+
+
+    // dangerous: replace + to spaces in memory!
+    for (int j = 0; j < last - buf; j++) {
+      if (src[j] == '+')
+        src[j] = ' ';
+    }
+
+
+    ngx_unescape_uri(&dst, &src, last - buf, 0);
+
+
+    //fprintf(stdout, "escaped %s\n ", decoded);
+
+    
+    query_string_to_json(response, decoded, strlen(decoded));
+    //fprintf(stdout, "QS: %s\n", response);
+
+    value->data = (u_char *) response;
+    value->len = strlen(response);
+    value->data[value->len] = '\0';
+    dd("value: [%.*s]", (int) value->len, value->data);
+    return NGX_OK;
+
+}
+
+
+
 static char *
 ngx_http_set_form_input_conf_handler(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
@@ -330,6 +755,11 @@ ngx_http_set_form_input_conf_handler(ngx_conf_t *cf, ngx_command_t *cmd,
     {
         dd("use ngx_http_form_input_multi");
         filter.func = (void *) ngx_http_set_form_input_multi;
+    } else if ((value->len == sizeof("set_form_input_json") - 1) &&
+        ngx_strncmp(value->data, "set_form_input_json", value->len) == 0)
+    {
+        dd("use ngx_http_form_input_json");
+        filter.func = (void *) ngx_http_set_form_input_json;
 
     } else {
         filter.func = (void *) ngx_http_set_form_input;
