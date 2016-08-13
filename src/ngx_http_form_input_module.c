@@ -523,20 +523,28 @@ char *query_string_to_json(char *response, char *qs, int size) {
         if (previous != NULL) {
           // Dont prepend context that matches with previous key
           int len = last - previous;
-          if (strncmp(previous, start, len > position - start ? len : position - start) == 0)
-            if (!lastch && len >= finish - start)
+          int s = position - start;
+          if (strncmp(previous, start, s) == 0)
+            if (!lastch && len > finish - start)
               prepended = 1; 
 
           // close all mismatching objects
-          if (len > finish - start && prepended == 0 && closed == 0) {
+          if (len > s && closed == 0 && prepended == 0) {
             closed = 1;
-            for (char *m = previous + 1; m < last; m++)
-              if (*m == '[')
-                strcat(response, "}\n");
+            for (char *m = last; m > previous + (finish - start); m--) {
+              if (*m == ']') {
+                if (*(m - 1) == '[') {
+                  strcat(response, "]\n");
+                  m -= 2;
+                } else {
+                  strcat(response, "}\n"); 
+                }
+              }
+            }
           }
 
           // add comma
-          if (!separated) {
+          if (!separated && s > 0) {
             separated = 1;
             strcat(response, ",");
           }
@@ -547,13 +555,23 @@ char *query_string_to_json(char *response, char *qs, int size) {
           char *fin = *(finish - 1) == ']' ? finish - 1 : finish;
           char *pos = *position == '[' ? position + 1 : position;
 
-          strcat(response, "\"");
-          strncpy(response + strlen(response), pos, fin - pos);
+          int l = strlen(response);
+          if (fin - pos == 0) {// [] array accessor
+            if (response[l - 1] == '\n' && response[l - 2] == '{')
+              response[l - 2] = '[';
+            if (lastch)
+              strcat(response, "\"");
+          } else {
+            strcat(response, "\"");
+            strncpy(response + l + 1, pos, fin - pos);
+
+            if (lastch)
+              strcat(response, "\":\"");
+          }
+
         }
 
         if (lastch) {
-          strcat(response, "\":\"");
-
           // find value
           char *v = finish + 1;
           for (; v < qs + size; v++) {
@@ -593,9 +611,15 @@ char *query_string_to_json(char *response, char *qs, int size) {
     }
   }
   // close all open objects
-  for (char *m = previous + 1; m < last; m++)
-    if (*m == '[')
-      strcat(response, "}\n");
+  for (char *m = last; m > previous; m--)
+    if (*m == ']' || m == previous + 1) {
+      if (*(m - 1) == '[') {
+        strcat(response, "]\n");
+        m -= 2;
+      } else {
+        strcat(response, "}\n"); 
+      }
+    }
 
   strcat(response, "}\0");
 
@@ -716,7 +740,7 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
     
     query_string_to_json(response, decoded, strlen(decoded));
-    //fprintf(stdout, "QS: %s\n", response);
+    fprintf(stdout, "QS: %s\n", response);
 
     value->data = (u_char *) response;
     value->len = strlen(response);
