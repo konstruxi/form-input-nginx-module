@@ -732,7 +732,8 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
 
     // dangerous: replace + to spaces in memory!
-    for (int j = 0; j < last - buf; j++) {
+    int j = 0;
+    for (; j < last - buf; j++) {
       if (src[j] == '+')
         src[j] = ' ';
     }
