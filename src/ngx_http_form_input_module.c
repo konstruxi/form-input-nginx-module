@@ -490,7 +490,8 @@ char *query_string_to_json(char *response, char *qs, int size) {
   char *array[128];
 
   char *last = qs;
-  for (char *p = qs; p < qs + size; p++) {
+  char *p = qs;
+  for (; p < qs + size; p++) {
     if (*p == '&' || p == qs + size - 1) {
       length = array_push_sorted(array, length, last, p - last - 1);
       last = p + 1;
@@ -505,13 +506,15 @@ char *query_string_to_json(char *response, char *qs, int size) {
 
   previous = NULL;
 
-  for (int i = 0; i < length; i++) {
+  int i = 0;
+  for (; i < length; i++) {
     start = *(array + i);
     position = start;
 
     int separated = 0;
     int closed = 0;
-    for (char *p = *(array + i); p < qs + size; p++) {
+    char *p = *(array + i);
+    for (; p < qs + size; p++) {
       char *next = p;
       lastch = (p == qs + size - 1 || *next == '&' || *next == '=') ? 1 : 0;
       
@@ -531,7 +534,8 @@ char *query_string_to_json(char *response, char *qs, int size) {
           // close all mismatching objects
           if (len > s && closed == 0 && prepended == 0) {
             closed = 1;
-            for (char *m = last; m > previous + (finish - start); m--) {
+            char *m = last;
+            for (; m > previous + (finish - start); m--) {
               if (*m == ']') {
                 if (*(m - 1) == '[') {
                   strcat(response, "]\n");
@@ -611,7 +615,8 @@ char *query_string_to_json(char *response, char *qs, int size) {
     }
   }
   // close all open objects
-  for (char *m = last; m > previous; m--)
+  char *m = last;
+  for (; m > previous; m--)
     if (*m == ']' || m == previous + 1) {
       if (*(m - 1) == '[') {
         strcat(response, "]\n");
