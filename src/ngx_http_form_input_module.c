@@ -574,7 +574,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
             else
               strcat(response, "{");
 
-            prepended = true;
+            prepended = 1;
           } else {
             strcat(response, "\"");
             strncpy(response + l + 1, pos, fin - pos);
