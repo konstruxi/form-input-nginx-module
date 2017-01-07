@@ -527,19 +527,25 @@ char *query_string_to_json(char *response, char *qs, int size) {
           // Dont prepend context that matches with previous key
           int len = last - previous;
           int s = position - start;
+          // check if previous key matches current key so far 
           if (strncmp(previous, start, s) == 0)
-            if (!lastch && len > finish - start)
+            if (!lastch && strncmp(previous, start, finish - start) == 0) {
+              fprintf(stdout, "Consider prepended: [%d %s] \n%s\n%s\n\n", s, next, previous, start);
               prepended = 1; 
+            }
 
           // close all mismatching objects
-          if (len > s && closed == 0 && prepended == 0) {
+          fprintf(stdout, "LOL [%d %d]: %.*s\n",prepended, closed, 5, next );
+          if (closed == 0 && prepended == 0) {
             closed = 1;
-            char *m = last;
-            for (; m > previous + (finish - start); m--) {
-              if (*m == ']') {
-                if (*(m - 1) == '[') {
+            char *m = last, *n = NULL;
+            fprintf(stdout, "Breaking [%d] \n%s\n%s\n\n", lastch, previous + s, position);
+            for (; m >= previous + s; m--) {
+              if (*m == '[') {
+                for (n = m; *(n + 1) != ']';)
+                  n++;
+                if (m == n || ngx_atoi(m + 1, n - m) != NGX_ERROR) {
                   strcat(response, "]\n");
-                  m -= 2;
                 } else {
                   strcat(response, "}\n"); 
                 }
@@ -548,7 +554,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
           }
 
           // add comma
-          if (!separated && s > 0) {
+          if (!separated && closed) {
             separated = 1;
             strcat(response, ",");
           }
@@ -560,11 +566,15 @@ char *query_string_to_json(char *response, char *qs, int size) {
           char *pos = *position == '[' ? position + 1 : position;
 
           int l = strlen(response);
-          if (fin - pos == 0) {// [] array accessor
+          if (fin - pos == 0 || ngx_atoi(pos, fin - pos) != NGX_ERROR) {// [] array accessor
             if (response[l - 1] == '\n' && response[l - 2] == '{')
               response[l - 2] = '[';
             if (lastch)
               strcat(response, "\"");
+            else
+              strcat(response, "{");
+
+            prepended = true;
           } else {
             strcat(response, "\"");
             strncpy(response + l + 1, pos, fin - pos);
@@ -615,20 +625,18 @@ char *query_string_to_json(char *response, char *qs, int size) {
     }
   }
   // close all open objects
-  char *m = last;
+  char *m = finish, 
+       *n = NULL;
   for (; m > previous; m--)
     if (*m == ']' || m == previous + 1) {
-      if (*(m - 1) == '[') {
+      for (n = m; (n > previous) && (*(n - 1) != '[');)
+        n--;
+      if (m == n || ngx_atoi(n, m - n) != NGX_ERROR) {
         strcat(response, "]\n");
-        m -= 2;
       } else {
         strcat(response, "}\n"); 
       }
     }
-
-  strcat(response, "}\0");
-
-
   return response;
 }
 
