@@ -530,16 +530,16 @@ char *query_string_to_json(char *response, char *qs, int size) {
           // check if previous key matches current key so far 
           if (strncmp(previous, start, s) == 0)
             if (!lastch && strncmp(previous, start, finish - start) == 0) {
-              fprintf(stdout, "Consider prepended: [%d %s] \n%s\n%s\n\n", s, next, previous, start);
+              //fprintf(stdout, "Consider prepended: [%d %s] \n%s\n%s\n\n", s, next, previous, start);
               prepended = 1; 
             }
 
           // close all mismatching objects
-          fprintf(stdout, "LOL [%d %d]: %.*s\n",prepended, closed, 5, next );
+          //fprintf(stdout, "LOL [%d %d]: %.*s\n",prepended, closed, 5, next );
           if (closed == 0 && prepended == 0) {
             closed = 1;
             char *m = last, *n = NULL;
-            fprintf(stdout, "Breaking [%d] \n%s\n%s\n\n", lastch, previous + s, position);
+            //fprintf(stdout, "Breaking [%d] \n%s\n%s\n\n", lastch, previous + s, position);
             for (; m >= previous + s; m--) {
               if (*m == '[') {
                 for (n = m; *(n + 1) != ']';)
@@ -748,6 +748,7 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
 
     ngx_unescape_uri(&dst, &src, last - buf, 0);
+    *dst = '\0';
 
 
     //fprintf(stdout, "escaped %s\n ", decoded);
