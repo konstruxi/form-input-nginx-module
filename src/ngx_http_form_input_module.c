@@ -544,7 +544,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
               if (*m == '[') {
                 for (n = m; *(n + 1) != ']';)
                   n++;
-                if (m == n || ngx_atoi(m + 1, n - m) != NGX_ERROR) {
+                if (m == n || ngx_atoi((u_char *) m + 1, n - m) != NGX_ERROR) {
                   strcat(response, "]\n");
                 } else {
                   strcat(response, "}\n"); 
@@ -566,7 +566,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
           char *pos = *position == '[' ? position + 1 : position;
 
           int l = strlen(response);
-          if (fin - pos == 0 || ngx_atoi(pos, fin - pos) != NGX_ERROR) {// [] array accessor
+          if (fin - pos == 0 || ngx_atoi((u_char *) pos, fin - pos) != NGX_ERROR) {// [] array accessor
             if (response[l - 1] == '\n' && response[l - 2] == '{')
               response[l - 2] = '[';
             if (lastch)
@@ -631,7 +631,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
     if (*m == ']' || m == previous + 1) {
       for (n = m; (n > previous) && (*(n - 1) != '[');)
         n--;
-      if (m == n || ngx_atoi(n, m - n) != NGX_ERROR) {
+      if (m == n || ngx_atoi((u_char *) n, m - n) != NGX_ERROR) {
         strcat(response, "]\n");
       } else {
         strcat(response, "}\n"); 
@@ -752,11 +752,11 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
     
     query_string_to_json(serialized, decoded, strlen(decoded));
-    fprintf(stdout, "QS: %s\n", serialized);
+    // fprintf(stdout, "QS: %s\n", serialized);
 
     int size = strlen(serialized);
     char *response = ngx_pnalloc(r->pool, size + 1);
-    memcpy(response, serialized, size + 1)
+    memcpy(response, serialized, size + 1);
 
 
     value->data = (u_char *) response;
