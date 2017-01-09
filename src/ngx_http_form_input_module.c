@@ -487,7 +487,7 @@ int array_push_sorted(char *array[128], int size, char *string, int length) {
 // fills given string with nested json produced by parsing of qs
 char *query_string_to_json(char *response, char *qs, int size) {
   int length = 0;
-  char *array[128];
+  char *array[512]; // max k: v pairs
 
   char *last = qs;
   char *p = qs;
@@ -725,25 +725,24 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
         last = b->last;
     }
 
-    //fprintf(stdout, "finding %s\n ", buf);
 
-    // replace plus sign with space (?)
-
-    char decoded[1024] = "";
-    char *response = ngx_pnalloc(r->pool, sizeof(char) * 1024);
-    ngx_memzero(response, sizeof(char) * 1024);
+    char decoded[64000] = "";
+    char serialized[64000] = "";
+    ngx_memzero(serialized, 64000);
 
     //fprintf(stdout, "escaping %s\n ", buf);
 
     u_char *dst = (u_char *) &decoded;
-    u_char *src = buf;
+    u_char *src = (u_char *) &decoded;
 
 
-    // dangerous: replace + to spaces in memory!
+    // replace + to spaces
     int j = 0;
     for (; j < last - buf; j++) {
-      if (src[j] == '+')
-        src[j] = ' ';
+      if (buf[j] == '+')
+        dst[j] = ' ';
+      else
+        dst[j] = buf[j];
     }
 
 
@@ -751,11 +750,14 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
     *dst = '\0';
 
 
-    //fprintf(stdout, "escaped %s\n ", decoded);
-
     
-    query_string_to_json(response, decoded, strlen(decoded));
-    fprintf(stdout, "QS: %s\n", response);
+    query_string_to_json(serialized, decoded, strlen(decoded));
+    fprintf(stdout, "QS: %s\n", serialized);
+
+    int size = strlen(serialized);
+    char *response = ngx_pnalloc(r->pool, size + 1);
+    memcpy(response, serialized, size + 1)
+
 
     value->data = (u_char *) response;
     value->len = strlen(response);
