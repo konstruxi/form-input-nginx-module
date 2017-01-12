@@ -469,8 +469,17 @@ int array_push_sorted(char *array[128], int size, char *string, int length) {
     int i = 0;
     // skip equal parts of keys
     for (; i < length; i++)
-      if (string[i] != old[i])
+      if (string[i] != old[i] || string[i] == '=' || string[i] == '&')
         break;
+    // fprintf(stdout, "pushed %c %c\n", string[i], old[i]);
+    // overwrite duplicate keys, unless it's array
+    if ((string[i] == '=' || string[i] == '&') &&
+        (old[i] == '=' || old[i] == '&' || old[i] == '\0')) {
+      if (string[i - 1] != ']' || string[i - 2] != '[') {
+        size--;
+        break;
+      }
+    }
     // compare strings, splice item into array
     if (string[i] < old[i]) {
       for (k = size; --k >= j;)
@@ -491,10 +500,11 @@ char *query_string_to_json(char *response, char *qs, int size) {
 
   char *last = qs;
   char *p = qs;
-  for (; p < qs + size; p++) {
-    if (*p == '&' || p == qs + size - 1) {
+  for (; p < qs + size + 1; p++) {
+    if (p == qs + size || *p == '&') {
       length = array_push_sorted(array, length, last, p - last - 1);
       last = p + 1;
+
     }
 
   }
@@ -514,9 +524,9 @@ char *query_string_to_json(char *response, char *qs, int size) {
     int separated = 0;
     int closed = 0;
     char *p = *(array + i);
-    for (; p < qs + size; p++) {
+    for (; p < qs + size + 1; p++) {
       char *next = p;
-      lastch = (p == qs + size - 1 || *next == '&' || *next == '=') ? 1 : 0;
+      lastch = (p == qs + size || *next == '&' || *next == '=') ? 1 : 0;
       
       // found boundaries of a keyword (EOL, [ or ])
       if (*next == '[' || lastch) {
@@ -586,27 +596,26 @@ char *query_string_to_json(char *response, char *qs, int size) {
         }
 
         if (lastch) {
-          // find value
-          char *v = finish + 1;
-          for (; v < qs + size; v++) {
-            if (*v == '&' || *v == '=')
-              break;
+          if (*finish == '=') {
+            // find value
+            char *v = finish + 1;
+            for (; v < qs + size; v++) {
+              if (*v == '&' || *v == '=')
+                break;
+            }
+            // need to escape quotes?
+            int escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish + 1, v - finish - 1);
+            //fprintf(stdout, "got to escape %d\n", escape);
+
+            int from = strlen(response);
+            if (escape > 0) {
+              ngx_http_set_misc_escape_json_str_forked(response + from, finish + 1, v - finish - 1);
+
+            // append value
+            } else {
+              strncpy(response + from, finish + 1, v - finish - 1);
+            }
           }
-
-          
-          // need to escape quotes?
-          int escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish + 1, v - finish - 1);
-          //fprintf(stdout, "got to escape %d\n", escape);
-
-          int from = strlen(response);
-          if (escape > 0) {
-            ngx_http_set_misc_escape_json_str_forked(response + from, finish + 1, v - finish - 1);
-
-          // append value
-          } else {
-            strncpy(response + from, finish + 1, v - finish - 1);
-          }
-
           strcat(response, "\"\n");
 
           // remember path
@@ -653,27 +662,14 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
     ngx_array_t         *array = NULL;
     ngx_buf_t           *b;
 
-    if (multi) {
-        array = ngx_array_create(r->pool, 1, sizeof(ngx_str_t));
-        if (array == NULL) {
-            return NGX_ERROR;
-        }
-        value->data = (u_char *)array;
-        value->len = sizeof(ngx_array_t);
 
-    } else {
-        ngx_str_set(value, "");
-    }
+    ngx_str_set(value, "");
 
     /* we read data from r->request_body->bufs */
     if (r->request_body == NULL || r->request_body->bufs == NULL) {
         dd("empty rb or empty rb bufs");
-        return NGX_OK;
-    }
-
-    if (r->request_body->bufs->next != NULL) {
+    } else if (r->request_body->bufs->next != NULL) {
         /* more than one buffer...we should copy the data out... */
-        len = 0;
         for (cl = r->request_body->bufs; cl; cl = cl->next) {
             b = cl->buf;
 
@@ -682,8 +678,8 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
                               "form-input: in-file buffer found. aborted. "
                               "consider increasing your "
                               "client_body_buffer_size setting");
-
-                return NGX_OK;
+                len = 0;
+                break;
             }
 
             len += b->last - b->pos;
@@ -691,38 +687,35 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
         dd("len=%d", (int) len);
 
-        if (len == 0) {
-            return NGX_OK;
+        if (len != 0) {
+          buf = ngx_palloc(r->pool, len);
+          if (buf == NULL) {
+              return NGX_ERROR;
+          }
+
+          p = buf;
+          last = p + len;
+
+          for (cl = r->request_body->bufs; cl; cl = cl->next) {
+              p = ngx_copy(p, cl->buf->pos, cl->buf->last - cl->buf->pos);
+          }
+
+          dd("p - buf = %d, last - buf = %d", (int) (p - buf),
+             (int) (last - buf));
+
+          dd("copied buf (len %d): %.*s", (int) len, (int) len,
+             buf);
         }
-
-        buf = ngx_palloc(r->pool, len);
-        if (buf == NULL) {
-            return NGX_ERROR;
-        }
-
-        p = buf;
-        last = p + len;
-
-        for (cl = r->request_body->bufs; cl; cl = cl->next) {
-            p = ngx_copy(p, cl->buf->pos, cl->buf->last - cl->buf->pos);
-        }
-
-        dd("p - buf = %d, last - buf = %d", (int) (p - buf),
-           (int) (last - buf));
-
-        dd("copied buf (len %d): %.*s", (int) len, (int) len,
-           buf);
 
     } else {
         dd("XXX one buffer only");
 
         b = r->request_body->bufs->buf;
-        if (ngx_buf_size(b) == 0) {
-            return NGX_OK;
+        if (ngx_buf_size(b) > 0) {
+          buf = b->pos;
+          last = b->last;
+          len = b->last - b->pos;
         }
-
-        buf = b->pos;
-        last = b->last;
     }
 
 
@@ -733,36 +726,65 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
     //fprintf(stdout, "escaping %s\n ", buf);
 
     u_char *dst = (u_char *) &decoded;
-    u_char *src = (u_char *) &decoded;
+
+    ngx_str_t query_variable = ngx_string("query");
+    ngx_uint_t query_variable_hash = ngx_hash_key(query_variable.data, query_variable.len);
+    ngx_http_variable_value_t *query_data = ngx_http_get_variable( r, &query_variable, query_variable_hash  );
+
+    if (!query_data->not_found && query_data->len > 0) {
+      memcpy(decoded, query_data->data, query_data->len);
+      dst += query_data->len;
+    }
+
+    if (r->args.len > 0) {
+      if (dst != &decoded) 
+        *dst++ = '&';
+      u_char *src = (u_char *) r->args.data;
+      ngx_unescape_uri(&dst, &src, r->args.len, 0);
+    }
+
+    if (len > 0) {
+      if (dst != &decoded) 
+        *dst++ = '&';
+      u_char *src = dst;
+      // replace + to spaces
+      int j = 0;
+      for (; j < last - buf; j++) {
+        if (buf[j] == '+')
+          dst[j] = ' ';
+        else
+          dst[j] = buf[j];
+      }
 
 
-    // replace + to spaces
-    int j = 0;
-    for (; j < last - buf; j++) {
-      if (buf[j] == '+')
-        dst[j] = ' ';
-      else
-        dst[j] = buf[j];
+      ngx_unescape_uri(&dst, &src, last - buf, 0);
     }
 
 
-    ngx_unescape_uri(&dst, &src, last - buf, 0);
-    *dst = '\0';
+
+    if (len > 0 || r->args.len > 0 || query_data->len > 0) {
+      *dst = '\0';
+      //fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
+      query_string_to_json(serialized, decoded, strlen(decoded));
+      fprintf(stdout, "QS: %s\n", serialized);
+
+      int size = strlen(serialized);
+      char *response = ngx_pnalloc(r->pool, size + 1);
+      memcpy(response, serialized, size + 1);
 
 
-    
-    query_string_to_json(serialized, decoded, strlen(decoded));
-    // fprintf(stdout, "QS: %s\n", serialized);
-
-    int size = strlen(serialized);
-    char *response = ngx_pnalloc(r->pool, size + 1);
-    memcpy(response, serialized, size + 1);
-
-
-    value->data = (u_char *) response;
-    value->len = strlen(response);
-    value->data[value->len] = '\0';
-    dd("value: [%.*s]", (int) value->len, value->data);
+      value->data = (u_char *) response;
+      value->len = strlen(response);
+      value->data[value->len] = '\0';
+      dd("value: [%.*s]", (int) value->len, value->data);
+    } else {
+      char *response = ngx_pnalloc(r->pool, 3);
+      response[0] = '{';
+      response[1] = '}';
+      response[2] = '\0';
+      value->data = response;
+      value->len = 2;
+    }
     return NGX_OK;
 
 }
@@ -878,6 +900,8 @@ ngx_http_form_input_handler(ngx_http_request_t *r)
         return NGX_DONE;
     }
 
+    /*  Yaroslaff fedin hack: We parse QS into JSON
+
     if (r->method != NGX_HTTP_POST && r->method != NGX_HTTP_PUT) {
         return NGX_DECLINED;
     }
@@ -895,7 +919,7 @@ ngx_http_form_input_handler(ngx_http_request_t *r)
     dd("r->headers_in.content_length_n:%d",
        (int) r->headers_in.content_length_n);
 
-    /* just focus on x-www-form-urlencoded */
+    // just focus on x-www-form-urlencoded
 
     if (value.len < form_urlencoded_type_len
         || ngx_strncasecmp(value.data, (u_char *) form_urlencoded_type,
@@ -906,7 +930,7 @@ ngx_http_form_input_handler(ngx_http_request_t *r)
     }
 
     dd("content type is application/x-www-form-urlencoded");
-
+   */
     dd("create new ctx");
 
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_form_input_ctx_t));
