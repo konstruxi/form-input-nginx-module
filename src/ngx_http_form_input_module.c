@@ -469,12 +469,12 @@ int array_push_sorted(char *array[128], int size, char *string, int length) {
     int i = 0;
     // skip equal parts of keys
     for (; i < length; i++)
-      if (string[i] != old[i] || string[i] == '=' || string[i] == '&')
+      if (string[i] != old[i] || string[i] == '=' || string[i] == '&' || string[i] == '?')
         break;
     // fprintf(stdout, "pushed %c %c\n", string[i], old[i]);
     // overwrite duplicate keys, unless it's array
-    if ((string[i] == '=' || string[i] == '&') &&
-        (old[i] == '=' || old[i] == '&' || old[i] == '\0')) {
+    if ((string[i] == '=' || string[i] == '&' || string[i] == '?') &&
+        (old[i] == '=' || old[i] == '&' || old[i] == '\0' || old[i] == '?')) {
       if (string[i - 1] != ']' || string[i - 2] != '[') {
         size--;
         break;
@@ -501,7 +501,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
   char *last = qs;
   char *p = qs;
   for (; p < qs + size + 1; p++) {
-    if (p == qs + size || *p == '&') {
+    if (p == qs + size || *p == '&' || *p == '?') {
       length = array_push_sorted(array, length, last, p - last - 1);
       last = p + 1;
 
@@ -526,7 +526,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
     char *p = *(array + i);
     for (; p < qs + size + 1; p++) {
       char *next = p;
-      lastch = (p == qs + size || *next == '&' || *next == '=') ? 1 : 0;
+      lastch = (p == qs + size || *next == '&' || *next == '=' || *next == '?') ? 1 : 0;
       
       // found boundaries of a keyword (EOL, [ or ])
       if (*next == '[' || lastch) {
@@ -600,7 +600,7 @@ char *query_string_to_json(char *response, char *qs, int size) {
             // find value
             char *v = finish + 1;
             for (; v < qs + size; v++) {
-              if (*v == '&' || *v == '=')
+              if (*v == '&' || *v == '=' || *v == '?')
                 break;
             }
             // need to escape quotes?
@@ -764,9 +764,10 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
     if (len > 0 || r->args.len > 0 || query_data->len > 0) {
       *dst = '\0';
-      //fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
+      fprintf(stdout, " query: %s %d\n", query_data->data, query_data->len);
+      fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
       query_string_to_json(serialized, decoded, strlen(decoded));
-      fprintf(stdout, "QS: %s\n", serialized);
+      //fprintf(stdout, "QS: %s\n", serialized);
 
       int size = strlen(serialized);
       char *response = ngx_pnalloc(r->pool, size + 1);
