@@ -11,7 +11,13 @@
 #include <ngx_http.h>
 
 
-#define form_urlencoded_type "application/x-www-form-urlencoded"
+#define form_urlencoded_type        "application/x-www-form-urlencoded"
+#define form_multipart_type         "multipart/form-data"
+#define form_multipart_boundary     "boundary="
+#define form_multipart_name         "name=\""
+#define form_multipart_disposition  "Content-Disposition:"
+#define form_multipart_content_type "Content-Type:"
+#define NGX_UPLOAD_MALFORMED        "{}"
 #define form_urlencoded_type_len (sizeof(form_urlencoded_type) - 1)
 
 
@@ -469,12 +475,12 @@ int array_push_sorted(char *array[128], int size, char *string, int length) {
     int i = 0;
     // skip equal parts of keys
     for (; i < length; i++)
-      if (string[i] != old[i] || string[i] == '=' || string[i] == '&' || string[i] == '?')
+      if (string[i] != old[i] || string[i] == '=' || string[i] == '&' || string[i] == '?' || string[i] == '"')
         break;
     // fprintf(stdout, "pushed %c %c\n", string[i], old[i]);
     // overwrite duplicate keys, unless it's array
-    if ((string[i] == '=' || string[i] == '&' || string[i] == '?') &&
-        (old[i] == '=' || old[i] == '&' || old[i] == '\0' || old[i] == '?')) {
+    if ((string[i] == '=' || string[i] == '&' || string[i] == '?' || string[i] == '"') &&
+        (old[i] == '=' || old[i] == '&' || old[i] == '"' || old[i] == '\0' || old[i] == '?')) {
       if (string[i - 1] != ']' || string[i - 2] != '[') {
         size--;
         break;
@@ -649,6 +655,223 @@ char *query_string_to_json(char *response, char *qs, int size) {
   return response;
 }
 
+char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_request_t *r) {
+
+  
+  u_char                    *mime_type_end_ptr;
+  u_char                    *boundary_start_ptr, *boundary_end_ptr;
+  
+  mime_type_end_ptr = (u_char*) ngx_strchr(r->headers_in.content_type->value.data, ';');
+
+  ngx_str_t boundary;
+
+  if(mime_type_end_ptr == NULL) {
+      fprintf(stdout, "no boundary found in Content-Type\n");
+      return NGX_UPLOAD_MALFORMED;
+  }
+
+  boundary_start_ptr = ngx_strstrn(mime_type_end_ptr, form_multipart_boundary, sizeof(form_multipart_boundary) - 2);
+
+  if(boundary_start_ptr == NULL) {
+      fprintf(stdout, "no boundary found in Content-Type\n");
+      return NGX_UPLOAD_MALFORMED; // No boundary found
+  }
+
+  boundary_start_ptr += sizeof(form_multipart_boundary) - 1;
+  boundary_end_ptr = boundary_start_ptr + strcspn((char*)boundary_start_ptr, " ;\n\r");
+
+  if(boundary_end_ptr == boundary_start_ptr) {
+      fprintf(stdout, "boundary is empty\n");
+      return NGX_UPLOAD_MALFORMED;
+  }
+
+
+
+  fprintf(stdout, "boundary [%d] %s\n", boundary_end_ptr - boundary_start_ptr, boundary_start_ptr);
+
+
+
+
+
+  int length = 0;
+  char *array[512]; // max k: v pairs
+
+  char *p = qs;
+  for (; p < qs + size; p++) {
+    if (*p == *boundary_start_ptr) {
+      // seek boundary
+      if (!ngx_strncasecmp(p, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
+
+        // seek name
+        p += boundary_end_ptr - boundary_start_ptr;
+
+        if (*p == '-' && *(p + 1) == '-')
+          break;
+
+        while (*p != 'n' || ngx_strncasecmp(p, form_multipart_name, sizeof(form_multipart_name) - 1))
+          p++;
+
+        p += sizeof(form_multipart_name) - 1;
+
+
+        int len = 0;
+        while (*(p + len) != '"' && p + len < qs + size)
+          len++; 
+        length = array_push_sorted(array, length, p, len);
+
+      }
+    }
+
+  }
+
+  strcat(response, "{");
+
+  int lastch = 0;
+  char *finish, *start, *position, *previous, *last;
+
+  previous = NULL;
+
+  int i = 0;
+  for (; i < length; i++) {
+    start = *(array + i);
+    position = start;
+
+    int separated = 0;
+    int closed = 0;
+    char *p = *(array + i);
+    for (; p < qs + size + 1; p++) {
+      char *next = p;
+      lastch = (p == qs + size || *next == '"') ? 1 : 0;
+      
+      // found boundaries of a keyword (EOL, [ or ])
+      if (*next == '[' || lastch) {
+        finish = p;
+        int prepended = 0;
+
+        if (previous != NULL) {
+          // Dont prepend context that matches with previous key
+          int len = last - previous;
+          int s = position - start;
+          // check if previous key matches current key so far 
+          if (strncmp(previous, start, s) == 0)
+            if (!lastch && strncmp(previous, start, finish - start) == 0) {
+              //fprintf(stdout, "Consider prepended: [%d %s] \n%s\n%s\n\n", s, next, previous, start);
+              prepended = 1; 
+            }
+
+          // close all mismatching objects
+          //fprintf(stdout, "LOL [%d %d]: %.*s\n",prepended, closed, 5, next );
+          if (closed == 0 && prepended == 0) {
+            closed = 1;
+            char *m = last, *n = NULL;
+            //fprintf(stdout, "Breaking [%d] \n%s\n%s\n\n", lastch, previous + s, position);
+            for (; m >= previous + s; m--) {
+              if (*m == '[') {
+                for (n = m; *(n + 1) != ']';)
+                  n++;
+                if (m == n || ngx_atoi((u_char *) m + 1, n - m) != NGX_ERROR) {
+                  strcat(response, "]\n");
+                } else {
+                  strcat(response, "}\n"); 
+                }
+              }
+            }
+          }
+
+          // add comma
+          if (!separated && closed) {
+            separated = 1;
+            strcat(response, ",");
+          }
+        }
+
+        // prepend key
+        if (!prepended) {
+          char *fin = *(finish - 1) == ']' ? finish - 1 : finish;
+          char *pos = *position == '[' ? position + 1 : position;
+
+          int l = strlen(response);
+          if (fin - pos == 0 || ngx_atoi((u_char *) pos, fin - pos) != NGX_ERROR) {// [] array accessor
+            if (response[l - 1] == '\n' && response[l - 2] == '{')
+              response[l - 2] = '[';
+            if (lastch)
+              strcat(response, "\"");
+            else
+              strcat(response, "{");
+
+            prepended = 1;
+          } else {
+            strcat(response, "\"");
+            strncpy(response + l + 1, pos, fin - pos);
+
+            if (lastch)
+              strcat(response, "\":\"");
+          }
+
+        }
+
+        if (lastch) {
+
+          // seek start value
+          while (*(finish - 1) != '\n' || *(finish - 2) != '\r' || *(finish - 3) != '\n'|| *(finish - 4) != '\r') 
+            finish++;
+          // seek end of value
+
+          int len = 0;
+          while (*(finish + len) != *boundary_start_ptr || ngx_strncasecmp(finish + len, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
+            len++;
+          }
+
+          // rewind \r\n\r\n
+          len -= 4;
+
+
+          // need to escape quotes?
+          int escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish, len);
+          //fprintf(stdout, "got to escape %d\n", escape);
+
+          int from = strlen(response);
+          if (escape > 0) {
+            ngx_http_set_misc_escape_json_str_forked(response + from, finish, len);
+
+          // append value
+          } else {
+            strncpy(response + from, finish, len);
+          }
+
+          strcat(response, "\"\n");
+
+          // remember path
+          previous = start;
+          last = position;
+
+        } else {
+          // prepend key
+          if (!prepended) strcat(response, "\": {\n");
+          position = finish + 1;
+        }
+      }
+      if (lastch) break;
+
+
+    }
+  }
+  // close all open objects
+  char *m = finish, 
+       *n = NULL;
+  for (; m > previous; m--)
+    if (*m == ']' || m == previous + 1) {
+      for (n = m; (n > previous) && (*(n - 1) != '[');)
+        n--;
+      if (m == n || ngx_atoi((u_char *) n, m - n) != NGX_ERROR) {
+        strcat(response, "]\n");
+      } else {
+        strcat(response, "}\n"); 
+      }
+    }
+  return response;
+}
+
 
 /* serialize response as json
   (as k/v objects wrapped in outer array)*/
@@ -766,8 +989,16 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
       *dst = '\0';
       fprintf(stdout, " query: %s %d\n", query_data->data, query_data->len);
       fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
-      query_string_to_json(serialized, decoded, strlen(decoded));
-      //fprintf(stdout, "QS: %s\n", serialized);
+      
+      if(ngx_strncasecmp(r->headers_in.content_type->value.data, (u_char*) form_multipart_type,
+          sizeof(form_multipart_type) - 1)) {
+        fprintf(stdout, "THIS IS URLENC [%s]\n", r->headers_in.content_type->value.data);
+        query_string_to_json(serialized, decoded, strlen(decoded));
+      } else {
+        fprintf(stdout, "THIS IS MULTIPART [%s]\n", r->headers_in.content_type->value.data);
+        multipart_string_to_json(serialized, decoded, strlen(decoded), r);
+      }
+      fprintf(stdout, "QS: %s\n", serialized);
 
       int size = strlen(serialized);
       char *response = ngx_pnalloc(r->pool, size + 1);
