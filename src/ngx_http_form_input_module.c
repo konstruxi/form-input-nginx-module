@@ -697,17 +697,19 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
   char *array[512]; // max k: v pairs
 
   char *p = qs;
+  char *t;
   for (; p < qs + size; p++) {
     if (*p == *boundary_start_ptr) {
       // seek boundary
       if (!ngx_strncasecmp(p, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
-
-        // seek name
         p += boundary_end_ptr - boundary_start_ptr;
 
+        // bail out on last boundary
         if (*p == '-' && *(p + 1) == '-')
           break;
+        
 
+        // seek name
         while (*p != 'n' || ngx_strncasecmp(p, form_multipart_name, sizeof(form_multipart_name) - 1))
           p++;
 
@@ -795,7 +797,7 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
             if (response[l - 1] == '\n' && response[l - 2] == '{')
               response[l - 2] = '[';
             if (lastch)
-              strcat(response, "\"");
+              strcat(response, "");
             else
               strcat(response, "{");
 
@@ -805,18 +807,29 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
             strncpy(response + l + 1, pos, fin - pos);
 
             if (lastch)
-              strcat(response, "\":\"");
+              strcat(response, "\":");
           }
 
         }
 
         if (lastch) {
+          // seek back the boundary
+          t = finish;
+          while (*t != *boundary_start_ptr || ngx_strncasecmp(t, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr ))
+            t--;
+
+          // seek content type
+          while (*t != 'C' || ngx_strncasecmp(t, form_multipart_content_type, sizeof(form_multipart_content_type) - 1))
+            if (*t == '\n' && *(t - 1) == '\r' && *(t - 2) == '\n' && *(t - 3) == '\r')
+              break;
+            else
+              t++;
 
           // seek start value
           while (*(finish - 1) != '\n' || *(finish - 2) != '\r' || *(finish - 3) != '\n'|| *(finish - 4) != '\r') 
             finish++;
-          // seek end of value
 
+          // seek end of value
           int len = 0;
           while (*(finish + len) != *boundary_start_ptr || ngx_strncasecmp(finish + len, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
             len++;
@@ -825,21 +838,55 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
           // rewind \r\n\r\n
           len -= 4;
 
+          // found content type
+          int binary = 0;
+          int escape = 0;
+          int type_length = 0;
+          if (*t == 'C') {
+            t += sizeof(form_multipart_content_type) - 1;
+            while (*t == ' ')  t++;
 
-          // need to escape quotes?
-          int escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish, len);
-          //fprintf(stdout, "got to escape %d\n", escape);
+            while (*(t + type_length) != '\r' && *(t + type_length) != '\n')
+              type_length++;
 
-          int from = strlen(response);
-          if (escape > 0) {
-            ngx_http_set_misc_escape_json_str_forked(response + from, finish, len);
-
-          // append value
-          } else {
-            strncpy(response + from, finish, len);
+            // text type
+            if (*t == 't' && *(t + 1) == 'e' && *(t + 2) == 'x' && *(t + 3) == 't' && *(t + 4) == '/') {
+              fprintf(stdout, "FOUND text TYPE [%d] [%d] [%.*s]\n", len, type_length, 20, t);
+            } else {
+              binary = 1;
+              fprintf(stdout, "FOUND some TYPE [%d] [%d] [%.*s]\n", len, type_length, 20, t);
+            }
           }
 
-          strcat(response, "\"\n");
+          int from = strlen(response);
+          // inject reference to in-memory file
+          if (binary) {
+            if (len == 0)
+              sprintf(response + from, 
+                          "null\n", 
+                          (int) finish, len, 0, type_length, t);
+            else
+              sprintf(response + from, 
+                          "{\"data\": %d, \"len\": %d, \"blob_index\": %d, \"content_type\": \"%.*s\"}\n", 
+                          (int) finish, len, 0, type_length, t);
+          } else {
+            strcat(response, "\"");
+            from++;
+
+            // need to escape quotes?
+            escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish, len);
+            
+            //fprintf(stdout, "got to escape %d\n", escape);
+
+            if (escape > 0) {
+              ngx_http_set_misc_escape_json_str_forked(response + from, finish, len);
+            // append value
+            } else if (binary) {
+              strncpy(response + from, finish, len);
+            }
+            strcat(response, "\"\n");
+          }
+
 
           // remember path
           previous = start;
@@ -959,44 +1006,44 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
       dst += query_data->len;
     }
 
-    if (r->args.len > 0) {
-      if (dst != &decoded) 
-        *dst++ = '&';
-      u_char *src = (u_char *) r->args.data;
-      ngx_unescape_uri(&dst, &src, r->args.len, 0);
-    }
-
-    if (len > 0) {
-      if (dst != &decoded) 
-        *dst++ = '&';
-      u_char *src = dst;
-      // replace + to spaces
-      int j = 0;
-      for (; j < last - buf; j++) {
-        if (buf[j] == '+')
-          dst[j] = ' ';
-        else
-          dst[j] = buf[j];
-      }
-
-
-      ngx_unescape_uri(&dst, &src, last - buf, 0);
-    }
+    
 
 
 
     if (len > 0 || r->args.len > 0 || query_data->len > 0) {
       *dst = '\0';
-      fprintf(stdout, " query: %s %d\n", query_data->data, query_data->len);
-      fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
+      //fprintf(stdout, " query: %s %d\n", query_data->data, query_data->len);
+      //fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
       
-      if(ngx_strncasecmp(r->headers_in.content_type->value.data, (u_char*) form_multipart_type,
+      if(!r->headers_in.content_type || ngx_strncasecmp(r->headers_in.content_type->value.data, (u_char*) form_multipart_type,
           sizeof(form_multipart_type) - 1)) {
-        fprintf(stdout, "THIS IS URLENC [%s]\n", r->headers_in.content_type->value.data);
+
+        // prepend $query
+        if (r->args.len > 0) {
+          if (dst != &decoded) 
+            *dst++ = '&';
+          u_char *src = (u_char *) r->args.data;
+          ngx_unescape_uri(&dst, &src, r->args.len, 0);
+        }
+
+        // unescape request body
+        if (len > 0) {
+          if (dst != &decoded) 
+            *dst++ = '&';
+          u_char *src = dst;
+          // replace + to spaces
+          int j = 0;
+          for (; j < last - buf; j++) {
+            if (buf[j] == '+')
+              dst[j] = ' ';
+            else
+              dst[j] = buf[j];
+          }
+          ngx_unescape_uri(&dst, &src, last - buf, 0);
+        }
         query_string_to_json(serialized, decoded, strlen(decoded));
       } else {
-        fprintf(stdout, "THIS IS MULTIPART [%s]\n", r->headers_in.content_type->value.data);
-        multipart_string_to_json(serialized, decoded, strlen(decoded), r);
+        multipart_string_to_json(serialized, buf, last - buf, r);
       }
       fprintf(stdout, "QS: %s\n", serialized);
 
