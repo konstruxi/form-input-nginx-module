@@ -15,9 +15,9 @@
 #define form_multipart_type         "multipart/form-data"
 #define form_multipart_boundary     "boundary="
 #define form_multipart_name         "name=\""
+#define form_multipart_file_name    "filename=\""
 #define form_multipart_disposition  "Content-Disposition:"
 #define form_multipart_content_type "Content-Type:"
-#define NGX_UPLOAD_MALFORMED        "{}"
 #define form_urlencoded_type_len (sizeof(form_urlencoded_type) - 1)
 
 
@@ -655,9 +655,9 @@ char *query_string_to_json(char *response, char *qs, int size) {
   return response;
 }
 
-char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_request_t *r) {
+int multipart_string_to_json(char *response, char *qs, int size, ngx_http_request_t *r, char *blobs[256], int *blobs_lengths) {
 
-  
+  int blob_count = 0;
   u_char                    *mime_type_end_ptr;
   u_char                    *boundary_start_ptr, *boundary_end_ptr;
   
@@ -667,14 +667,14 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
 
   if(mime_type_end_ptr == NULL) {
       fprintf(stdout, "no boundary found in Content-Type\n");
-      return NGX_UPLOAD_MALFORMED;
+      return -1;
   }
 
   boundary_start_ptr = ngx_strstrn(mime_type_end_ptr, form_multipart_boundary, sizeof(form_multipart_boundary) - 2);
 
   if(boundary_start_ptr == NULL) {
       fprintf(stdout, "no boundary found in Content-Type\n");
-      return NGX_UPLOAD_MALFORMED; // No boundary found
+      return -1; // No boundary found
   }
 
   boundary_start_ptr += sizeof(form_multipart_boundary) - 1;
@@ -682,13 +682,14 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
 
   if(boundary_end_ptr == boundary_start_ptr) {
       fprintf(stdout, "boundary is empty\n");
-      return NGX_UPLOAD_MALFORMED;
+      return -1;
   }
 
 
 
-  fprintf(stdout, "boundary [%d] %s\n", boundary_end_ptr - boundary_start_ptr, boundary_start_ptr);
+  //fprintf(stdout, "boundary [%d] %s\n", boundary_end_ptr - boundary_start_ptr, boundary_start_ptr);
 
+  //fprintf(stdout, "WHOLE MESSAGES %.*s\n", size, qs);
 
 
 
@@ -697,46 +698,135 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
   char *array[512]; // max k: v pairs
 
   char *p = qs;
-  char *t;
   for (; p < qs + size; p++) {
-    if (*p == *boundary_start_ptr) {
-      // seek boundary
-      if (!ngx_strncasecmp(p, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
-        p += boundary_end_ptr - boundary_start_ptr;
+    if (*p != *boundary_start_ptr) 
+      continue;
+    // seek boundary
+    if (ngx_strncasecmp(p, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) 
+      continue;
 
-        // bail out on last boundary
-        if (*p == '-' && *(p + 1) == '-')
-          break;
-        
+    p += boundary_end_ptr - boundary_start_ptr;
 
-        // seek name
-        while (*p != 'n' || ngx_strncasecmp(p, form_multipart_name, sizeof(form_multipart_name) - 1))
-          p++;
+    // bail out on last boundary
+    if (*p == '-' && *(p + 1) == '-')
+      break;
+    
 
-        p += sizeof(form_multipart_name) - 1;
+    // seek name
+    while (*p != 'n' || ngx_strncasecmp(p,  (u_char*) form_multipart_name, sizeof(form_multipart_name) - 1))
+      p++;
+
+    p += sizeof(form_multipart_name) - 1;
 
 
-        int len = 0;
-        while (*(p + len) != '"' && p + len < qs + size)
-          len++; 
-        length = array_push_sorted(array, length, p, len);
+    int len = 0;
+    while (*(p + len) != '"' && p + len < qs + size)
+      len++; 
 
-      }
-    }
+    // ignore empty file fields (they have empty filenames)
+    char *empty_file_check = p + len;
+    while (*empty_file_check == '"' || *empty_file_check == ';' || *empty_file_check == ' ')
+      empty_file_check++;
 
+    if (!ngx_strncasecmp(empty_file_check,  (u_char*) form_multipart_file_name, sizeof(form_multipart_file_name) - 1)
+      && *(empty_file_check + sizeof(form_multipart_file_name) - 1) == '"') 
+      continue;
+
+    length = array_push_sorted(array, length, p, len);
   }
 
   strcat(response, "{");
 
   int lastch = 0;
-  char *finish, *start, *position, *previous, *last;
+  char *finish, *cursor, *start, *position, *previous, *last;
 
+  char *content_type, *file_name;
   previous = NULL;
 
   int i = 0;
+  // do similar routine to qs->json generator to contextualize compound parameters
+  // like article[names][0][text]
   for (; i < length; i++) {
     start = *(array + i);
     position = start;
+
+    // seek back the boundary
+    content_type = start;
+    while (*content_type != *boundary_start_ptr || ngx_strncasecmp((u_char*) content_type, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr ))
+      content_type--;
+    file_name = content_type;
+
+    cursor = start;
+
+    // seek start value
+    while (*(cursor - 1) != '\n' || *(cursor - 2) != '\r' || *(cursor - 3) != '\n'|| *(cursor - 4) != '\r') 
+      cursor++;
+
+    // seek end of value
+    int value_len = 0;
+    while (*(cursor + value_len) != *boundary_start_ptr || ngx_strncasecmp(cursor + value_len, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
+      value_len++;
+    }
+
+    // rewind \r\n\r\n
+    value_len -= 4;
+
+
+
+
+    // seek filename
+    while (*file_name != 'f' || ngx_strncasecmp((u_char*) file_name,  (u_char*) form_multipart_file_name, sizeof(form_multipart_file_name) - 1))
+      if (*file_name == '\n' && *(file_name - 1) == '\r' && *(file_name - 2) == '\n' && *(file_name - 3) == '\r')
+        break;
+      else
+        file_name++;
+
+    int file_name_length = 0;
+    if (*file_name == 'f') {
+      file_name += sizeof(form_multipart_file_name) - 1;
+      while (*(file_name + file_name_length) != '"')
+        file_name_length++;
+    }
+
+
+    // seek content type
+    while (*content_type != 'C' || ngx_strncasecmp((u_char*) content_type,  (u_char*) form_multipart_content_type, sizeof(form_multipart_content_type) - 1))
+      if (*content_type == '\n' && *(content_type - 1) == '\r' && *(content_type - 2) == '\n' && *(content_type - 3) == '\r')
+        break;
+      else
+        content_type++;
+
+    int binary = 0;
+    int escape = 0;
+    int type_length = 0;
+
+    // found content type
+    if (*content_type == 'C') {
+      content_type += sizeof(form_multipart_content_type) - 1;
+      while (*content_type == ' ')  content_type++;
+
+      while (*(content_type + type_length) != '\r' && *(content_type + type_length) != '\n')
+        type_length++;
+
+      // empty chunk
+      if (file_name_length == 0 && value_len == 0) {
+        continue;
+      // text type
+      } if (ngx_strncasecmp((u_char*) content_type,  (u_char*) "text/", 5) == 0 && file_name_length == 0) {
+        //fprintf(stdout, "FOUND text field [%d] [%.*s]\n", value_len, type_length, content_type);
+      } else {
+        binary = 1;
+        //fprintf(stdout, "FOUND file [%d] [%.*s] [%.*s]\n", value_len, type_length, content_type, file_name_length, file_name);
+      }
+    }
+    if (value_len == 0 && binary == 1)
+      continue;
+
+
+
+
+
+
 
     int separated = 0;
     int closed = 0;
@@ -812,77 +902,34 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
 
         }
 
+        // multipart-specific extraction of value
+
         if (lastch) {
-          // seek back the boundary
-          t = finish;
-          while (*t != *boundary_start_ptr || ngx_strncasecmp(t, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr ))
-            t--;
-
-          // seek content type
-          while (*t != 'C' || ngx_strncasecmp(t, form_multipart_content_type, sizeof(form_multipart_content_type) - 1))
-            if (*t == '\n' && *(t - 1) == '\r' && *(t - 2) == '\n' && *(t - 3) == '\r')
-              break;
-            else
-              t++;
-
-          // seek start value
-          while (*(finish - 1) != '\n' || *(finish - 2) != '\r' || *(finish - 3) != '\n'|| *(finish - 4) != '\r') 
-            finish++;
-
-          // seek end of value
-          int len = 0;
-          while (*(finish + len) != *boundary_start_ptr || ngx_strncasecmp(finish + len, (u_char*) boundary_start_ptr, boundary_end_ptr - boundary_start_ptr )) {
-            len++;
-          }
-
-          // rewind \r\n\r\n
-          len -= 4;
-
-          // found content type
-          int binary = 0;
-          int escape = 0;
-          int type_length = 0;
-          if (*t == 'C') {
-            t += sizeof(form_multipart_content_type) - 1;
-            while (*t == ' ')  t++;
-
-            while (*(t + type_length) != '\r' && *(t + type_length) != '\n')
-              type_length++;
-
-            // text type
-            if (*t == 't' && *(t + 1) == 'e' && *(t + 2) == 'x' && *(t + 3) == 't' && *(t + 4) == '/') {
-              fprintf(stdout, "FOUND text TYPE [%d] [%d] [%.*s]\n", len, type_length, 20, t);
-            } else {
-              binary = 1;
-              fprintf(stdout, "FOUND some TYPE [%d] [%d] [%.*s]\n", len, type_length, 20, t);
-            }
-          }
 
           int from = strlen(response);
           // inject reference to in-memory file
           if (binary) {
-            if (len == 0)
-              sprintf(response + from, 
-                          "null\n", 
-                          (int) finish, len, 0, type_length, t);
-            else
-              sprintf(response + from, 
-                          "{\"data\": %d, \"len\": %d, \"blob_index\": %d, \"content_type\": \"%.*s\"}\n", 
-                          (int) finish, len, 0, type_length, t);
+            sprintf(response + from, 
+                        "{\"data\": %d, \"size\": %d, \"blob_index\": %d, \"content_type\": \"%.*s\", \"name\": \"%.*s\"}\n", 
+                        (int) cursor, value_len, blob_count, type_length, content_type, file_name_length, file_name);              
+            *(blobs + blob_count) = cursor;
+
+            blobs_lengths[blob_count] = value_len;
+            blob_count++;
           } else {
             strcat(response, "\"");
             from++;
 
             // need to escape quotes?
-            escape = ngx_http_set_misc_escape_json_str_forked(NULL, finish, len);
+            escape = ngx_http_set_misc_escape_json_str_forked(NULL, cursor, value_len);
             
             //fprintf(stdout, "got to escape %d\n", escape);
 
             if (escape > 0) {
-              ngx_http_set_misc_escape_json_str_forked(response + from, finish, len);
+              ngx_http_set_misc_escape_json_str_forked(response + from, cursor, value_len);
             // append value
-            } else if (binary) {
-              strncpy(response + from, finish, len);
+            } else {
+              strncpy(response + from, cursor, value_len);
             }
             strcat(response, "\"\n");
           }
@@ -916,7 +963,7 @@ char *multipart_string_to_json(char *response, char *qs, int size, ngx_http_requ
         strcat(response, "}\n"); 
       }
     }
-  return response;
+  return blob_count;
 }
 
 
@@ -988,40 +1035,22 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
         }
     }
 
-
-    char decoded[64000] = "";
     char serialized[64000] = "";
     ngx_memzero(serialized, 64000);
 
-    //fprintf(stdout, "escaping %s\n ", buf);
-
-    u_char *dst = (u_char *) &decoded;
-
-    ngx_str_t query_variable = ngx_string("query");
-    ngx_uint_t query_variable_hash = ngx_hash_key(query_variable.data, query_variable.len);
-    ngx_http_variable_value_t *query_data = ngx_http_get_variable( r, &query_variable, query_variable_hash  );
-
-    if (!query_data->not_found && query_data->len > 0) {
-      memcpy(decoded, query_data->data, query_data->len);
-      dst += query_data->len;
-    }
-
-    
-
-
-
-    if (len > 0 || r->args.len > 0 || query_data->len > 0) {
-      *dst = '\0';
+    if (len > 0 || r->args.len > 0) {
       //fprintf(stdout, " query: %s %d\n", query_data->data, query_data->len);
       //fprintf(stdout, " decoding: %s %d\n", decoded, strlen(decoded));
       
       if(!r->headers_in.content_type || ngx_strncasecmp(r->headers_in.content_type->value.data, (u_char*) form_multipart_type,
           sizeof(form_multipart_type) - 1)) {
 
+
+        char decoded[64000] = "";
+        u_char *dst = (u_char *) &decoded;
+
         // prepend $query
         if (r->args.len > 0) {
-          if (dst != &decoded) 
-            *dst++ = '&';
           u_char *src = (u_char *) r->args.data;
           ngx_unescape_uri(&dst, &src, r->args.len, 0);
         }
@@ -1043,7 +1072,45 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
         }
         query_string_to_json(serialized, decoded, strlen(decoded));
       } else {
-        multipart_string_to_json(serialized, buf, last - buf, r);
+
+        char *blobs[256];
+        int blobs_lengths[256];
+        ngx_memzero(blobs, 256);
+        ngx_memzero(blobs_lengths, 256);
+
+        int blob_count = multipart_string_to_json(serialized, buf, last - buf, r, blobs, (int *) blobs_lengths);
+        if (blob_count > 0) {
+          int total_encoded_blob_size = sizeof("{}") - 1 - 1; //extra comma
+          int blob_index = 0;
+          // count total blob length after escaped to hex
+          for (; blob_index < blob_count; blob_index++)
+            total_encoded_blob_size += blobs_lengths[blob_index] * 2 + sizeof("'\\x'");
+
+          u_char *blob_allocation = ngx_pnalloc(r->pool, total_encoded_blob_size);
+          u_char *blob_cursor = blob_allocation;
+
+          // produce hex escaped array of bytea files from multipart body
+          *(blob_cursor++) = '{';
+          for (blob_index = 0; blob_index < blob_count; blob_index++) {
+            if (blob_index > 0)
+              *(blob_cursor++) = ',';
+            *(blob_cursor++) = '"';
+            *(blob_cursor++) = '\\';
+            *(blob_cursor++) = 'x';
+            blob_cursor = ngx_hex_dump(blob_cursor, blobs[blob_index], blobs_lengths[blob_index]);
+            *(blob_cursor++) = '"';
+          }
+          *(blob_cursor++) = '}';
+
+          ngx_str_t blob_variable_name = ngx_string("params_blobs");
+          ngx_uint_t blob_variable_hash = ngx_hash_key(blob_variable_name.data, blob_variable_name.len);
+          ngx_http_variable_value_t *blob_variable = ngx_http_get_variable( r, &blob_variable_name, blob_variable_hash  );
+
+          blob_variable->data = blob_allocation;
+          blob_variable->len = total_encoded_blob_size;
+
+          fprintf(stdout, "Found %d blobs, first is %d bytes, message is %d \n", blob_count, blobs_lengths[0], total_encoded_blob_size);
+        }
       }
       fprintf(stdout, "QS: %s\n", serialized);
 
