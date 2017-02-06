@@ -467,7 +467,7 @@ ngx_http_set_misc_escape_json_str_forked(char *dst, char *src, size_t size)
 
 // push value into sorted array at correct spot 
 // sorting is needed to serialize nested qs keys properly
-int array_push_sorted(char *array[128], int size, char *string, int length) {
+int array_push_sorted(char *array[512], int size, char *string, int length) {
   int j, k;
   char *old;
   for (j = 0; j < size; j++ ) {
@@ -1047,13 +1047,14 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
 
 
         char decoded[64000] = "";
+        u_char *dststart = (u_char *) &decoded;
         u_char *dst = (u_char *) &decoded;
 
         // prepend $query
-        if (r->args.len > 0) {
-          u_char *src = (u_char *) r->args.data;
-          ngx_unescape_uri(&dst, &src, r->args.len, 0);
-        }
+        //if (r->args.len > 0) {
+        //  u_char *src = (u_char *) r->args.data;
+        //  ngx_unescape_uri(&dst, &src, r->args.len, 0);
+        //}
 
         // unescape request body
         if (len > 0) {
@@ -1070,7 +1071,7 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
           }
           ngx_unescape_uri(&dst, &src, last - buf, 0);
         }
-        query_string_to_json(serialized, decoded, strlen(decoded));
+        query_string_to_json(serialized, decoded, dst - dststart);
       } else {
 
         char *blobs[256];
