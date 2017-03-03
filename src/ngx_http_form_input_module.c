@@ -1085,7 +1085,7 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
           int blob_index = 0;
           // count total blob length after escaped to hex
           for (; blob_index < blob_count; blob_index++)
-            total_encoded_blob_size += blobs_lengths[blob_index] * 2 + sizeof("'\\\\x'");
+            total_encoded_blob_size += blobs_lengths[blob_index] * 2 + sizeof("\\\\x");
 
           u_char *blob_allocation = ngx_pnalloc(r->pool, total_encoded_blob_size);
           u_char *blob_cursor = blob_allocation;
@@ -1095,12 +1095,10 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
           for (blob_index = 0; blob_index < blob_count; blob_index++) {
             if (blob_index > 0)
               *(blob_cursor++) = ',';
-            *(blob_cursor++) = '"';
             *(blob_cursor++) = '\\';
             *(blob_cursor++) = '\\';
             *(blob_cursor++) = 'x';
             blob_cursor = ngx_hex_dump(blob_cursor, blobs[blob_index], blobs_lengths[blob_index]);
-            *(blob_cursor++) = '"';
           }
           *(blob_cursor++) = '}';
 
