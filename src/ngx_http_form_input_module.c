@@ -1109,6 +1109,7 @@ ngx_http_form_input_json(ngx_http_request_t *r, u_char *arg_name, size_t arg_len
           blob_variable->len = total_encoded_blob_size;
 
           fprintf(stdout, "Found %d blobs, first is %d bytes, message is %d \n", blob_count, blobs_lengths[0], total_encoded_blob_size);
+          fprintf(stdout, "%.*s \n", 100, blob_allocation);
         }
       }
 
